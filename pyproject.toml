@@ -1,0 +1,19 @@
+[project]
+name = "shutterspeedanalyzer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Iliyan Gochev", email = "iliyan.gochev@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "opencv-python>=4.12.0.88",
+]
+
+[project.scripts]
+shutterspeedanalyzer = "shutterspeedanalyzer:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
