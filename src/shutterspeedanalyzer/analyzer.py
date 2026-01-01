@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+from pathlib import Path
 
 # --- Configuration Constants ---
 # Use the closest rounded number for simplicity in calculations.
@@ -10,7 +11,7 @@ CAMERA_FPS = 180.0
 # Threshold for detecting light: The minimum average brightness (0-255) 
 # required in the ROI to consider the shutter "open" and the frame "active".
 # You may need to adjust this based on your light source and setup.
-BRIGHTNESS_THRESHOLD = 18
+BRIGHTNESS_THRESHOLD = 45
 
 # Region of Interest (ROI) for analysis: 
 # We focus on the central area where the shutter opening is most uniform.
@@ -139,14 +140,14 @@ def analyze_shutter_video(video_path, target_shutter_speed_str):
         cv2.destroyAllWindows()
 
     # 3. Calculation and Results
-    
+
     if active_frames > 0:
         actual_time_s = active_frames / CAMERA_FPS
-        
+
         # Calculate the relative error
         time_difference = actual_time_s - target_time_s
         percentage_error = (time_difference / target_time_s) * 100
-        
+
         # Determine the speed rating for display
         if percentage_error > 5:
             rating = "SLOW (needs adjustment)"
@@ -163,7 +164,15 @@ def analyze_shutter_video(video_path, target_shutter_speed_str):
         print(f"Percentage Error: {percentage_error:+.2f} %")
         print(f"Shutter Health Rating: {rating}")
         print("-" * 40)
-        
+
+        return {
+            'active_frames': active_frames,
+            'actual_time_s': actual_time_s,
+            'target_time_s': target_time_s,
+            'percentage_error': percentage_error,
+            'success': True
+        }
+
     else:
         print("\n--- Analysis Failed ---")
         print("No exposure detected (0 frames counted). Check the following:")
@@ -172,13 +181,143 @@ def analyze_shutter_video(video_path, target_shutter_speed_str):
         print("3. Is the light source bright enough?")
         print("-" * 40)
 
+        return {'success': False}
+
+
+def batch_analyze_samples(samples_dir='samples'):
+    """
+    Batch processes all videos in the samples directory structure.
+    Each subfolder name represents the shutter speed denominator (e.g., '60' means 1/60).
+
+    Args:
+        samples_dir (str): Path to the samples directory containing subfolders.
+    """
+    samples_path = Path(samples_dir)
+
+    if not samples_path.exists():
+        print(f"Error: Samples directory '{samples_dir}' not found.")
+        return
+
+    # Supported video extensions
+    video_extensions = {'.mp4', '.MP4', '.mov', '.MOV', '.avi', '.AVI'}
+
+    # Get all subdirectories sorted by shutter speed denominator (numerically)
+    subfolders = [d for d in samples_path.iterdir() if d.is_dir()]
+
+    # Sort numerically by folder name
+    try:
+        subfolders.sort(key=lambda x: int(x.name))
+    except ValueError:
+        # If some folders aren't numeric, sort alphabetically
+        subfolders.sort(key=lambda x: x.name)
+
+    total_videos = 0
+    processed_videos = 0
+    speed_results = {}  # Store results per shutter speed
+
+    print("=" * 60)
+    print("BATCH SHUTTER SPEED ANALYSIS")
+    print("=" * 60)
+    print(f"Camera Frame Rate: {CAMERA_FPS:.2f} fps (Canon R6 II 1080p HFR)")
+    print(f"Brightness Threshold: {BRIGHTNESS_THRESHOLD}")
+    print(f"ROI (normalized): {ROI_NORM}")
+    print("=" * 60)
+
+    # Process each subfolder
+    for subfolder in subfolders:
+        shutter_denominator = subfolder.name
+
+        # Get all video files in this subfolder
+        video_files = [f for f in subfolder.iterdir()
+                      if f.is_file() and f.suffix in video_extensions]
+
+        if not video_files:
+            print(f"\nSkipping folder '{shutter_denominator}' - no video files found.")
+            continue
+
+        total_videos += len(video_files)
+
+        print(f"\n{'='*60}")
+        print(f"SHUTTER SPEED: 1/{shutter_denominator}")
+        print(f"Videos found: {len(video_files)}")
+        print(f"{'='*60}")
+
+        # Store results for this shutter speed
+        speed_results[shutter_denominator] = []
+
+        # Process each video in this folder
+        for video_file in sorted(video_files):
+            print(f"\n>>> Processing: {video_file.name}")
+            target_speed_str = f"1/{shutter_denominator}"
+
+            try:
+                result = analyze_shutter_video(str(video_file), target_speed_str)
+                if result and result.get('success'):
+                    speed_results[shutter_denominator].append(result)
+                    processed_videos += 1
+            except Exception as e:
+                print(f"!!! Error processing {video_file.name}: {str(e)}")
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("BATCH PROCESSING COMPLETE")
+    print("=" * 60)
+    print(f"Total videos found: {total_videos}")
+    print(f"Successfully processed: {processed_videos}")
+    print(f"Failed: {total_videos - processed_videos}")
+    print("=" * 60)
+
+    # Print summary report
+    print("\n" + "=" * 60)
+    print("SUMMARY REPORT - AVERAGE RESULTS PER SHUTTER SPEED")
+    print("=" * 60)
+
+    for shutter_denominator in sorted(speed_results.keys(), key=lambda x: int(x)):
+        results = speed_results[shutter_denominator]
+
+        if not results:
+            continue
+
+        # Calculate averages
+        avg_frames = sum(r['active_frames'] for r in results) / len(results)
+        avg_actual_time = sum(r['actual_time_s'] for r in results) / len(results)
+        avg_target_time = results[0]['target_time_s']  # Same for all in this group
+        avg_percentage_error = sum(r['percentage_error'] for r in results) / len(results)
+
+        # Determine rating
+        if avg_percentage_error > 5:
+            rating = "SLOW"
+        elif avg_percentage_error < -5:
+            rating = "FAST"
+        else:
+            rating = "GOOD"
+
+        print(f"\n1/{shutter_denominator} ({len(results)} videos)")
+        print(f"  Avg Frames: {avg_frames:.1f}")
+        print(f"  Avg Actual Time: {avg_actual_time*1000:.2f} ms")
+        print(f"  Target Time: {avg_target_time*1000:.2f} ms")
+        print(f"  Avg Error: {avg_percentage_error:+.2f}%")
+        print(f"  Rating: {rating}")
+
+    print("=" * 60)
+
 
 if __name__ == '__main__':
     print("Welcome to the Shutter Speed Video Analyzer!")
-    print("Ensure your video was shot in Canon R6 II 1080p HFR (approx. 180 fps).")
-    
-    # Get user inputs
-    video_file = input("Enter the path to your video file (e.g., 'shutter_test.mp4'): ")
-    target_speed = input("Enter the set shutter speed (e.g., '1/60' or '1/125'): ")
-    
-    analyze_shutter_video(video_file, target_speed)
+    print("Ensure your videos were shot in Canon R6 II 1080p HFR (approx. 180 fps).")
+    print()
+
+    # Check if we should run in batch mode
+    mode = input("Mode? (1=Single video, 2=Batch process samples folder) [2]: ").strip()
+
+    if mode == '1':
+        # Single video mode (original behavior)
+        video_file = input("Enter the path to your video file (e.g., 'shutter_test.mp4'): ")
+        target_speed = input("Enter the set shutter speed (e.g., '1/60' or '1/125'): ")
+        analyze_shutter_video(video_file, target_speed)
+    else:
+        # Batch mode (default)
+        samples_dir = input("Enter samples directory path [samples]: ").strip()
+        if not samples_dir:
+            samples_dir = 'samples'
+        batch_analyze_samples(samples_dir)
